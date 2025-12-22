@@ -1,82 +1,110 @@
 import streamlit as st
 import pandas as pd
+from io import BytesIO
 
-st.set_page_config(page_title="Orçamentador Técnico", layout="wide")
+# Configuração da página
+st.set_page_config(page_title="Orçamentador Flexível", layout="wide")
 
-st.title("🏗️ Composição de Custos Detalhada")
-
-# --- BARRA LATERAL: CONFIGURAÇÕES GERAIS ---
-with st.sidebar:
-    st.header("Configurações de Impostos e BDI")
-    percentual_imposto = st.number_input("Impostos Totais (%)", value=15.0)
-    percentual_encargos = st.number_input("Encargos Sociais M.O. (%)", value=125.0)
-    percentual_lucro = st.number_input("Margem de Lucro/BDI (%)", value=20.0)
-    frete_geral = st.number_input("Frete Global (R$)", value=0.0)
-
+st.title("🏗️ Orçamentador com Edição Total")
 st.markdown("---")
 
-arquivo_subido = st.file_uploader("Arraste a planilha da construtora", type=["xlsx", "csv"])
+# 1. BARRA LATERAL (Configurações Financeiras)
+with st.sidebar:
+    st.header("Configurações Globais")
+    perc_imposto = st.number_input("Impostos (%)", value=15.0)
+    perc_encargos = st.number_input("Encargos Sociais M.O. (%)", value=125.0)
+    perc_lucro = st.number_input("Margem de Lucro/BDI (%)", value=20.0)
+    frete_fixo = st.number_input("Frete/Logística Total (R$)", value=0.0)
 
-if arquivo_subido is not None:
+divisor = 1 - ((perc_imposto + perc_lucro) / 100)
+
+# 2. GESTÃO DOS DADOS (Memória do Site)
+# Usamos o 'session_state' para o site não esquecer as linhas novas ao clicar em botões
+if 'dados_orcamento' not in st.session_state:
+    st.session_state.dados_orcamento = None
+
+# 3. IMPORTAÇÃO
+st.subheader("1. Entrada de Dados")
+arquivo_subido = st.file_uploader("Importar planilha da construtora", type=["xlsx", "csv"])
+
+if arquivo_subido is not None and st.session_state.dados_orcamento is None:
     try:
-        # Leitura padrão (pulando 7 linhas conforme seus arquivos)
-        df = pd.read_csv(arquivo_subido, skiprows=7) if arquivo_subido.name.endswith('.csv') else pd.read_excel(arquivo_subido, skiprows=7)
+        if arquivo_subido.name.endswith('.csv'):
+            df_ini = pd.read_csv(arquivo_subido, skiprows=7)
+        else:
+            df_ini = pd.read_excel(arquivo_subido, skiprows=7)
         
-        # Seleciona colunas base
-        colunas_base = ['ITEM', 'DESCRIÇÃO', 'UND', 'QDT']
-        df = df[[c for c in colunas_base if c in df.columns]].copy()
-        df = df.dropna(subset=['DESCRIÇÃO'])
-
-        # --- CRIAÇÃO DAS COLUNAS DE CÁLCULO ---
-        # Iniciamos com valores zerados para você preencher
-        if 'Custo Mat. Unit.' not in df.columns:
-            df['Custo Mat. Unit.'] = 0.0
-        if 'Mão de Obra Unit.' not in df.columns:
-            df['Mão de Obra Unit.'] = 0.0
-
-        st.subheader("🛠️ Composição por Item")
-        st.caption("Ajuste os valores de Material e Mão de Obra abaixo:")
-
-        # Tabela Editável de Engenharia
-        df_editado = st.data_editor(
-            df,
-            column_config={
-                "Custo Mat. Unit.": st.column_config.NumberColumn("Material (R$)", format="R$ %.2f"),
-                "Mão de Obra Unit.": st.column_config.NumberColumn("M.O. (R$)", format="R$ %.2f"),
-            },
-            disabled=['ITEM', 'DESCRIÇÃO', 'UND', 'QDT'],
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        # --- LÓGICA DE CÁLCULO MATEMÁTICO ---
-        # 1. M.O. com Encargos
-        mo_com_encargos = df_editado['Mão de Obra Unit.'] * (1 + percentual_encargos/100)
+        colunas_alvo = ['ITEM', 'DESCRIÇÃO', 'OBSERVAÇÕES', 'IMAGEM', 'UND', 'QDT']
+        colunas_existentes = [c for c in colunas_alvo if c in df_ini.columns]
+        df_ini = df_ini[colunas_existentes].copy()
+        df_ini = df_ini.dropna(subset=['DESCRIÇÃO'])
         
-        # 2. Custo Direto Total (Material + M.O. com Encargos)
-        custo_direto_unitario = df_editado['Custo Mat. Unit.'] + mo_com_encargos
+        # Inicializa colunas de custo
+        df_ini['Custo Mat. Unit.'] = 0.0
+        df_ini['Mão de Obra Unit.'] = 0.0
         
-        # 3. Preço com Lucro e Imposto (Fórmula de Markup)
-        # Preço = Custo Direto / (1 - (Imposto + Lucro)/100)
-        divisor = 1 - ((percentual_imposto + percentual_lucro) / 100)
-        df_editado['Preço Final Unit.'] = custo_direto_unitario / divisor
-        
-        # 4. Total por Linha
-        df_editado['Total Item'] = df_editado['Preço Final Unit.'] * df_editado['QDT']
-
-        st.markdown("---")
-        
-        # Exibição dos resultados
-        st.subheader("📊 Resumo do Orçamento")
-        total_proposta = df_editado['Total Item'].sum() + frete_geral
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total de Materiais", f"R$ {df_editado['Custo Mat. Unit.'].sum():,.2f}")
-        c2.metric("Total M.O. (s/ encargos)", f"R$ {df_editado['Mão de Obra Unit.'].sum():,.2f}")
-        c3.metric("VALOR TOTAL (c/ Frete)", f"R$ {total_proposta:,.2f}")
-
-        st.write("### Detalhamento Final")
-        st.dataframe(df_editado[['ITEM', 'DESCRIÇÃO', 'Preço Final Unit.', 'Total Item']], use_container_width=True)
-
+        st.session_state.dados_orcamento = df_ini
     except Exception as e:
-        st.error(f"Erro técnico: {e}")
+        st.error(f"Erro na importação: {e}")
+
+# 4. TABELA EDITÁVEL E INCLUSÃO DE LINHAS
+if st.session_state.dados_orcamento is not None:
+    
+    st.subheader("2. Planilha de Orçamento (Edição Livre)")
+    
+    # Botão para adicionar linha manual
+    if st.button("➕ Adicionar Nova Linha"):
+        nova_linha = pd.DataFrame([{
+            'ITEM': '', 'DESCRIÇÃO': 'Novo Item Manual', 'OBSERVAÇÕES': '', 
+            'IMAGEM': '', 'UND': 'und', 'QDT': 1.0, 
+            'Custo Mat. Unit.': 0.0, 'Mão de Obra Unit.': 0.0
+        }])
+        st.session_state.dados_orcamento = pd.concat([st.session_state.dados_orcamento, nova_linha], ignore_index=True)
+        st.rerun() # Atualiza a tela para mostrar a linha nova
+
+    # Interface de Edição (Todas as colunas liberadas)
+    df_editado = st.data_editor(
+        st.session_state.dados_orcamento,
+        num_rows="dynamic", # Permite que o usuário delete linhas também selecionando e apertando 'del'
+        column_config={
+            "Custo Mat. Unit.": st.column_config.NumberColumn("Material Unit. (R$)", format="R$ %.2f"),
+            "Mão de Obra Unit.": st.column_config.NumberColumn("M.O. Unit. (R$)", format="R$ %.2f"),
+            "QDT": st.column_config.NumberColumn("Quantidade", format="%.2f"),
+        },
+        use_container_width=True,
+        hide_index=True,
+    )
+    
+    # Atualiza a memória com o que foi editado na tabela
+    st.session_state.dados_orcamento = df_editado
+
+    # 5. CÁLCULOS TÉCNICOS
+    # M.O. com encargos
+    mo_enc = df_editado['Mão de Obra Unit.'] * (1 + perc_encargos/100)
+    custo_direto = df_editado['Custo Mat. Unit.'] + mo_enc
+    
+    # Preço Final por Unidade (Markup)
+    precos_unitarios = custo_direto / divisor
+    totais_por_item = precos_unitarios * df_editado['QDT']
+
+    total_geral_obra = totais_por_item.sum() + frete_fixo
+
+    # EXIBIÇÃO DE RESULTADOS
+    st.markdown("---")
+    st.metric("VALOR TOTAL DA PROPOSTA (Líquido)", f"R$ {total_geral_obra:,.2f}")
+    
+    # Botão de Exportação
+    def converter_excel(df):
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df['Preço Final Unit.'] = precos_unitarios
+            df['Total do Item'] = totais_por_item
+            df.to_excel(writer, index=False, sheet_name='Orcamento_Final')
+        return output.getvalue()
+
+    st.download_button(
+        label="💾 Baixar Planilha Finalizada",
+        data=converter_excel(df_editado),
+        file_name=f"Orcamento_Obra.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
