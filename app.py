@@ -1,82 +1,82 @@
 import streamlit as st
 import pandas as pd
 
-# Configuração da página para visual limpo
-st.set_page_config(page_title="Sistema de Orçamento", layout="wide")
+st.set_page_config(page_title="Orçamentador Técnico", layout="wide")
 
-st.title("🏗️ Orçamentador Profissional")
-st.markdown("---")
+st.title("🏗️ Composição de Custos Detalhada")
 
-# 1. DADOS GERAIS (Cabeçalho)
-col1, col2, col3 = st.columns(3)
-with col1:
-    nome_obra = st.text_input("Nome da Obra / Cliente", placeholder="Ex: Itaú Lounge GRU")
-with col2:
-    data_orcamento = st.date_input("Data")
-with col3:
-    bdi_input = st.number_input("BDI (%)", min_value=0.0, value=20.0, step=0.1)
-
-bdi_calculo = 1 + (bdi_input / 100)
+# --- BARRA LATERAL: CONFIGURAÇÕES GERAIS ---
+with st.sidebar:
+    st.header("Configurações de Impostos e BDI")
+    percentual_imposto = st.number_input("Impostos Totais (%)", value=15.0)
+    percentual_encargos = st.number_input("Encargos Sociais M.O. (%)", value=125.0)
+    percentual_lucro = st.number_input("Margem de Lucro/BDI (%)", value=20.0)
+    frete_geral = st.number_input("Frete Global (R$)", value=0.0)
 
 st.markdown("---")
 
-# 2. ÁREA DE UPLOAD
-st.subheader("1. Importar Planilha da Construtora")
-arquivo_subido = st.file_uploader("Arraste o arquivo Excel ou CSV", type=["xlsx", "csv"])
+arquivo_subido = st.file_uploader("Arraste a planilha da construtora", type=["xlsx", "csv"])
 
 if arquivo_subido is not None:
     try:
-        # Lê a planilha pulando as 7 linhas iniciais (padrão das construtoras que você enviou)
-        if arquivo_subido.name.endswith('.csv'):
-            df = pd.read_csv(arquivo_subido, skiprows=7)
-        else:
-            df = pd.read_excel(arquivo_subido, skiprows=7)
+        # Leitura padrão (pulando 7 linhas conforme seus arquivos)
+        df = pd.read_csv(arquivo_subido, skiprows=7) if arquivo_subido.name.endswith('.csv') else pd.read_excel(arquivo_subido, skiprows=7)
         
-        # Define as colunas que queremos mostrar (baseado no seu pedido)
-        # Usamos nomes que aparecem nos seus arquivos: ITEM, DESCRIÇÃO, OBSERVAÇÕES, IMAGEM, UND, QDT
-        colunas_desejadas = ['ITEM', 'DESCRIÇÃO', 'OBSERVAÇÕES', 'IMAGEM', 'UND', 'QDT']
-        
-        # Filtra apenas as colunas que existem de fato no arquivo
-        colunas_existentes = [c for c in colunas_desejadas if c in df.columns]
-        df = df[colunas_existentes].copy()
-        
-        # Remove linhas totalmente vazias
+        # Seleciona colunas base
+        colunas_base = ['ITEM', 'DESCRIÇÃO', 'UND', 'QDT']
+        df = df[[c for c in colunas_base if c in df.columns]].copy()
         df = df.dropna(subset=['DESCRIÇÃO'])
 
-        # Adiciona a coluna de Custo se ela não existir
-        if 'Custo Unitário (R$)' not in df.columns:
-            df['Custo Unitário (R$)'] = 0.0
+        # --- CRIAÇÃO DAS COLUNAS DE CÁLCULO ---
+        # Iniciamos com valores zerados para você preencher
+        if 'Custo Mat. Unit.' not in df.columns:
+            df['Custo Mat. Unit.'] = 0.0
+        if 'Mão de Obra Unit.' not in df.columns:
+            df['Mão de Obra Unit.'] = 0.0
 
-        st.subheader("2. Tabela de Precificação")
-        st.info("Dê um duplo clique na célula de 'Custo Unitário' para editar o valor.")
+        st.subheader("🛠️ Composição por Item")
+        st.caption("Ajuste os valores de Material e Mão de Obra abaixo:")
 
-        # Tabela Interativa
-        df_editavel = st.data_editor(
+        # Tabela Editável de Engenharia
+        df_editado = st.data_editor(
             df,
             column_config={
-                "ITEM": st.column_config.TextColumn("Item", width="small"),
-                "DESCRIÇÃO": st.column_config.TextColumn("Descrição", width="medium"),
-                "OBSERVAÇÕES": st.column_config.TextColumn("Observações", width="large"),
-                "IMAGEM": st.column_config.TextColumn("Imagem", width="small"),
-                "UND": st.column_config.TextColumn("Unid.", width="small"),
-                "QDT": st.column_config.NumberColumn("Qtd", format="%.2f"),
-                "Custo Unitário (R$)": st.column_config.NumberColumn("Custo Unitário", format="R$ %.2f"),
+                "Custo Mat. Unit.": st.column_config.NumberColumn("Material (R$)", format="R$ %.2f"),
+                "Mão de Obra Unit.": st.column_config.NumberColumn("M.O. (R$)", format="R$ %.2f"),
             },
-            disabled=['ITEM', 'DESCRIÇÃO', 'OBSERVAÇÕES', 'IMAGEM', 'UND', 'QDT'],
+            disabled=['ITEM', 'DESCRIÇÃO', 'UND', 'QDT'],
             use_container_width=True,
             hide_index=True,
         )
 
-        # 3. CÁLCULOS TOTAIS
-        total_custo = (df_editavel['Custo Unitário (R$)'] * df_editavel['QDT']).sum()
-        total_com_bdi = total_custo * bdi_calculo
+        # --- LÓGICA DE CÁLCULO MATEMÁTICO ---
+        # 1. M.O. com Encargos
+        mo_com_encargos = df_editado['Mão de Obra Unit.'] * (1 + percentual_encargos/100)
+        
+        # 2. Custo Direto Total (Material + M.O. com Encargos)
+        custo_direto_unitario = df_editado['Custo Mat. Unit.'] + mo_com_encargos
+        
+        # 3. Preço com Lucro e Imposto (Fórmula de Markup)
+        # Preço = Custo Direto / (1 - (Imposto + Lucro)/100)
+        divisor = 1 - ((percentual_imposto + percentual_lucro) / 100)
+        df_editado['Preço Final Unit.'] = custo_direto_unitario / divisor
+        
+        # 4. Total por Linha
+        df_editado['Total Item'] = df_editado['Preço Final Unit.'] * df_editado['QDT']
 
         st.markdown("---")
-        res1, res2 = st.columns(2)
-        res1.metric("Custo Total Acumulado", f"R$ {total_custo:,.2f}")
-        res2.metric(f"PREÇO FINAL (Com {bdi_input}% BDI)", f"R$ {total_com_bdi:,.2f}")
+        
+        # Exibição dos resultados
+        st.subheader("📊 Resumo do Orçamento")
+        total_proposta = df_editado['Total Item'].sum() + frete_geral
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total de Materiais", f"R$ {df_editado['Custo Mat. Unit.'].sum():,.2f}")
+        c2.metric("Total M.O. (s/ encargos)", f"R$ {df_editado['Mão de Obra Unit.'].sum():,.2f}")
+        c3.metric("VALOR TOTAL (c/ Frete)", f"R$ {total_proposta:,.2f}")
+
+        st.write("### Detalhamento Final")
+        st.dataframe(df_editado[['ITEM', 'DESCRIÇÃO', 'Preço Final Unit.', 'Total Item']], use_container_width=True)
 
     except Exception as e:
-        st.error(f"Erro ao processar arquivo: {e}")
-
-st.markdown("---")
+        st.error(f"Erro técnico: {e}")
