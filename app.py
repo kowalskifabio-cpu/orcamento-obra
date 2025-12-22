@@ -22,47 +22,54 @@ st.markdown("---")
 
 # ÁREA DE UPLOAD
 st.subheader("1. Importar Planilha")
-arquivo_subido = st.file_uploader("Arraste o arquivo da construtora", type=["xlsx", "csv"])
+arquivo_subido = st.file_uploader("Arraste o arquivo da construtora (Ex: Marcenaria ou Mármore)", type=["xlsx", "csv"])
 
 if arquivo_subido is not None:
     try:
-        # Lê a planilha pulando as 7 linhas de cabeçalho (padrão que você enviou)
+        # Lê a planilha pulando as 7 linhas (ajustado para o seu padrão)
         df = pd.read_csv(arquivo_subido, skiprows=7) if arquivo_subido.name.endswith('.csv') else pd.read_excel(arquivo_subido, skiprows=7)
         
-        # Seleciona apenas as colunas que interessam para não poluir o visual
-        colunas_necessarias = ['ITEM', 'DESCRIÇÃO', 'UND', 'QDT']
-        # Filtra apenas as colunas que existem no arquivo para evitar erro
-        df = df[[c for c in colunas_necessarias if c in df.columns]]
-        df = df.dropna(subset=['DESCRIÇÃO']) # Remove linhas vazias
+        # Agora incluímos OBSERVAÇÕES e IMAGEM na lista de colunas permitidas
+        colunas_alvo = ['ITEM', 'DESCRIÇÃO', 'OBSERVAÇÕES', 'IMAGEM', 'UND', 'QDT']
+        
+        # Filtra apenas as colunas que realmente existem no arquivo subido
+        df = df[[c for c in colunas_alvo if c in df.columns]]
+        df = df.dropna(subset=['DESCRIÇÃO']) # Remove linhas sem descrição
 
-        st.subheader("2. Precificação")
-        st.info("💡 Clique duas vezes na célula de 'Custo Unitário' para digitar o preço.")
+        st.subheader("2. Precificação Detalhada")
+        
+        # Criamos a coluna de Custo Unitário se não existir
+        if 'Custo Unitário (R$)' not in df.columns:
+            df['Custo Unitário (R$)'] = 0.0
 
-        # Criamos a coluna de Custo preenchida com 0.0
-        df['Custo Unitário (R$)'] = 0.0
-
-        # Esta é a parte mágica: transforma a tabela em algo editável
+        # Tabela editável com as novas colunas
         df_editavel = st.data_editor(
             df,
             column_config={
-                "Custo Unitário (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
-                "QDT": st.column_config.NumberColumn("Qtd", help="Quantidade vinda da planilha"),
+                "ITEM": st.column_config.TextColumn("Item", width="small"),
+                "DESCRIÇÃO": st.column_config.TextColumn("Descrição", width="medium"),
+                "OBSERVAÇÕES": st.column_config.TextColumn("Observações", width="large"),
+                "IMAGEM": st.column_config.TextColumn("Link/Ref Imagem", width="small"),
+                "UND": st.column_config.TextColumn("Unid.", width="small"),
+                "QDT": st.column_config.NumberColumn("Qtd", format="%.2f"),
+                "Custo Unitário (R$)": st.column_config.NumberColumn("Custo Unitário", format="R$ %.2f"),
             },
-            disabled=["ITEM", "DESCRIÇÃO", "UND", "QDT"], # Bloqueia o que você não deve mexer
+            # Bloqueamos as colunas vindas da construtora, liberamos apenas o Custo
+            disabled=['ITEM', 'DESCRIÇÃO', 'OBSERVAÇÕES', 'IMAGEM', 'UND', 'QDT'], 
             use_container_width=True,
             hide_index=True,
         )
 
-        # Cálculos Finais
+        # Cálculos de Totais
         total_custo = (df_editavel['Custo Unitário (R$)'] * df_editavel['QDT']).sum()
         total_com_bdi = total_custo * bdi_calculo
 
         st.markdown("---")
         c1, c2 = st.columns(2)
-        c1.metric("Custo Total (Materiais/Mão de Obra)", f"R$ {total_custo:,.2f}")
-        c2.metric(f"PREÇO FINAL (Com {bdi_input}% BDI)", f"R$ {total_com_bdi:,.2f}")
+        with c1:
+            st.metric("Custo Total (Base)", f"R$ {total_custo:,.2f}")
+        with c2:
+            st.metric(f"PREÇO FINAL (BDI {bdi_input}%)", f"R$ {total_com_bdi:,.2f}")
 
     except Exception as e:
-        st.error(f"Erro ao processar: {e}")
-
-st.markdown("---")
+        st.error(f
