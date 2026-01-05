@@ -4,7 +4,7 @@ from io import BytesIO
 
 st.set_page_config(page_title="Orçamentador Total", layout="wide")
 
-st.title("🏗️ Orçamentador: Importação Completa")
+st.title("🏗️ Orçamentador: Espelhamento Completo")
 
 # --- 1. ÁREA DE UPLOAD ---
 st.subheader("📁 1. Carregar Ficheiros")
@@ -14,11 +14,11 @@ with col_up1:
     arq_obra = st.file_uploader("Planilha da CONSTRUTORA", type=["xlsx", "csv"], key="obra")
 
 with col_up2:
-    arq_lista = st.file_uploader("Seu LISTÃO DE PREÇOS (CSV ou Excel)", type=["xlsx", "csv"], key="lista")
+    arq_lista = st.file_uploader("Seu LISTÃO (Listão.xlsx)", type=["xlsx", "csv"], key="lista")
 
 # --- 2. CONFIGURAÇÕES (SIDEBAR) ---
 with st.sidebar:
-    st.header("⚙️ Parâmetros Financeiros")
+    st.header("⚙️ Financeiro")
     perc_imposto = st.number_input("Impostos (%)", value=15.0)
     perc_encargos = st.number_input("Encargos M.O. (%)", value=125.0)
     perc_lucro = st.number_input("Margem de Lucro (%)", value=20.0)
@@ -29,7 +29,7 @@ divisor = 1 - ((perc_imposto + perc_lucro) / 100)
 # --- 3. PROCESSAMENTO ---
 if arq_obra and arq_lista:
     try:
-        # Lendo a Obra (pula 7 linhas)
+        # Lendo a Obra sem filtros rígidos (pula as 7 de cabeçalho)
         if arq_obra.name.endswith('.csv'):
             df_obra = pd.read_csv(arq_obra, skiprows=7)
         else:
@@ -44,19 +44,15 @@ if arq_obra and arq_lista:
             except:
                 df_base = pd.read_excel(arq_lista)
         
-        # Limpeza de colunas: Mantém o que encontrar e garante as de custo
-        colunas_obra = df_obra.columns.tolist()
-        
-        # Criamos o dataframe final mantendo TODAS as linhas
-        df_final = df_obra.copy()
-        
-        # Garante que as colunas de edição existam
-        if 'Custo Mat. Unit.' not in df_final.columns:
-            df_final['Custo Mat. Unit.'] = 0.0
-        if 'Mão de Obra Unit.' not in df_final.columns:
-            df_final['Mão de Obra Unit.'] = 0.0
+        # Remove colunas totalmente sem nome (comuns em Excel sujo)
+        df_obra = df_obra.loc[:, ~df_obra.columns.str.contains('^Unnamed')]
 
-        st.success(f"✅ Planilha da construtora lida com {len(df_final)} linhas.")
+        # ADICIONA COLUNAS DE TRABALHO (Se não existirem)
+        for col in ['Custo Material Unit.', 'Mão de Obra Unit.']:
+            if col not in df_obra.columns:
+                df_obra[col] = 0.0
+
+        st.success(f"✅ Planilha da construtora carregada com {len(df_obra)} linhas.")
 
         # --- 4. BUSCADOR ---
         with st.expander("🔍 CONSULTAR PREÇOS NO LISTÃO"):
@@ -67,44 +63,47 @@ if arq_obra and arq_lista:
 
         # --- 5. TABELA DE ORÇAMENTO ---
         st.subheader("📝 Edição do Orçamento")
-        st.caption("Abaixo estão todas as linhas da planilha original.")
         
+        # O data_editor agora mostra TUDO o que veio no Excel
         df_editavel = st.data_editor(
-            df_final,
+            df_obra,
             num_rows="dynamic",
             column_config={
-                "Custo Mat. Unit.": st.column_config.NumberColumn("Custo Material", format="R$ %.2f"),
-                "Mão de Obra Unit.": st.column_config.NumberColumn("Mão de Obra", format="R$ %.2f"),
+                "Custo Material Unit.": st.column_config.NumberColumn("Custo Mat. (R$)", format="R$ %.2f"),
+                "Mão de Obra Unit.": st.column_config.NumberColumn("M.O. (R$)", format="R$ %.2f"),
             },
             use_container_width=True,
             hide_index=True
         )
 
         # --- 6. CÁLCULOS ---
-        # Tratamos a coluna QDT para garantir que seja numérica (converte erros em 0)
-        qtd_num = pd.to_numeric(df_editavel['QDT'], errors='coerce').fillna(0)
+        # Tenta achar a coluna de quantidade (pode ser QDT, Qtd, Quantidade...)
+        col_qtd = next((c for c in df_editavel.columns if 'QDT' in c.upper() or 'QTD' in c.upper()), None)
         
-        mo_enc = df_editavel['Mão de Obra Unit.'] * (1 + perc_encargos/100)
-        custo_direto = df_editavel['Custo Mat. Unit.'] + mo_enc
-        venda_unit = custo_direto / divisor
-        total_item = venda_unit * qtd_num
+        if col_qtd:
+            qtd_num = pd.to_numeric(df_editavel[col_qtd], errors='coerce').fillna(0)
+            mo_enc = df_editavel['Mão de Obra Unit.'] * (1 + perc_encargos/100)
+            custo_direto = df_editavel['Custo Material Unit.'] + mo_enc
+            venda_unit = custo_direto / divisor
+            total_item = venda_unit * qtd_num
+            total_obra = total_item.sum() + frete_fixo
 
-        total_obra = total_item.sum() + frete_fixo
+            st.markdown("---")
+            st.metric("VALOR TOTAL DA PROPOSTA", f"R$ {total_obra:,.2f}")
 
-        st.markdown("---")
-        st.metric("VALOR TOTAL DA PROPOSTA", f"R$ {total_obra:,.2f}")
-
-        # Exportação
-        df_export = df_editavel.copy()
-        df_export['Venda Unit.'] = venda_unit
-        df_export['Total Item'] = total_item
-        
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_export.to_excel(writer, index=False)
-        st.download_button("💾 Baixar Orçamento Completo", data=output.getvalue(), file_name="Orcamento_Total.xlsx")
+            # Exportação
+            df_export = df_editavel.copy()
+            df_export['VENDA UNITÁRIO'] = venda_unit
+            df_export['TOTAL DO ITEM'] = total_item
+            
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_export.to_excel(writer, index=False)
+            st.download_button("💾 Baixar Orçamento Completo", data=output.getvalue(), file_name="Orcamento_Final.xlsx")
+        else:
+            st.warning("⚠️ Não encontrei uma coluna de quantidade (QDT). Os cálculos totais não podem ser feitos, mas você pode editar os preços.")
 
     except Exception as e:
-        st.error(f"Erro ao processar: {e}")
+        st.error(f"Erro técnico ao processar: {e}")
 else:
-    st.warning("A
+    st.warning("Aguardando os ficheiros da CONSTRUTORA e o seu LISTÃO...")
