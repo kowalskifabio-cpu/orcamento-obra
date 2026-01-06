@@ -11,6 +11,7 @@ nome_logo = "WhatsApp Image 2026-01-06 at 08.45.15.jpeg"
 if os.path.exists(nome_logo):
     st.sidebar.image(Image.open(nome_logo), use_container_width=True)
 
+# --- MEMÓRIA DE DADOS ---
 if 'df_obra' not in st.session_state:
     st.session_state.df_obra = None
 if 'cpus' not in st.session_state:
@@ -19,16 +20,18 @@ if 'cpus' not in st.session_state:
 # --- 2. MODAL DE COMPOSIÇÃO TÉCNICA ---
 @st.dialog("Detalhamento da Composição (CPU)", width="large")
 def abrir_cpu(idx, dados_linha, df_mp):
-    # Identifica Descrição e Observações (Especificação)
-    # Busca flexível pelos nomes das colunas
+    # Identifica colunas de forma flexível
     col_desc = next((c for c in dados_linha.index if 'DESCRIÇÃO' in str(c).upper()), dados_linha.index[1])
     col_obs = next((c for c in dados_linha.index if 'OBSERVAÇÕES' in str(c).upper()), None)
     
-    desc_item = str(dados_linha[col_desc])
-    especificacao = str(dados_linha[col_obs]) if col_obs else "Não informada"
+    st.write(f"### 🛠️ Composição Técnica")
     
-    st.write(f"### 📋 Item: {desc_item}")
-    st.info(f"**Especificação:** {especificacao}") # Alterado de Observação para Especificação
+    # CAMPOS DE CABEÇALHO EDITÁVEIS DENTRO DO POP-UP
+    new_desc = st.text_input("Descrição do Item", value=str(dados_linha[col_desc]))
+    
+    # Campo Observações (Especificação) agora é um text_area editável
+    val_obs = str(dados_linha[col_obs]) if col_obs and pd.notnull(dados_linha[col_obs]) else ""
+    new_spec = st.text_area("Especificação (Observações da Construtora)", value=val_obs, height=100)
     
     if idx not in st.session_state.cpus:
         st.session_state.cpus[idx] = pd.DataFrame(columns=[
@@ -38,19 +41,7 @@ def abrir_cpu(idx, dados_linha, df_mp):
     df_atual = st.session_state.cpus[idx]
 
     with st.container(border=True):
-        st.write("#### 🛠️ Composição Técnica de Insumos")
-        
-        # BUSCA AUTOMÁTICA NA ABERTURA (Sugestão de Preço)
-        preco_sugerido = 0.0
-        if df_mp is not None:
-            # Busca o termo da 'Descrição' na base MP
-            match = df_mp[df_mp.astype(str).apply(lambda x: x.str.contains(desc_item, case=False, na=False)).any(axis=1)]
-            if not match.empty:
-                # Prioriza a coluna 'PREÇO' conforme o seu arquivo
-                if 'PREÇO' in match.columns:
-                    preco_sugerido = float(pd.to_numeric(match['PREÇO'].iloc[0], errors='coerce') or 0.0)
-
-        # Editor de Tabela
+        # Tabela de Insumos
         df_editado = st.data_editor(
             df_atual,
             num_rows="dynamic",
@@ -71,16 +62,21 @@ def abrir_cpu(idx, dados_linha, df_mp):
             total_direto = 0.0
 
         st.divider()
-        st.metric("Custo Direto Total do Item", f"R$ {total_direto:,.2f}")
+        st.metric("Custo Direto Total", f"R$ {total_direto:,.2f}")
         
-        if st.button("✅ Salvar Composição"):
+        if st.button("✅ Salvar e Atualizar Master"):
+            # Atualiza a memória da CPU
             st.session_state.cpus[idx] = df_editado
+            # Atualiza os dados na planilha principal (Master)
+            st.session_state.df_obra.at[idx, col_desc] = new_desc
+            if col_obs:
+                st.session_state.df_obra.at[idx, col_obs] = new_spec
             st.session_state.df_obra.at[idx, 'Custo Unitário Final'] = total_direto
             st.session_state.df_obra.at[idx, 'Status'] = "✅"
             st.rerun()
 
 # --- 3. INTERFACE PRINCIPAL ---
-st.title("🏗️ Orçamentador Profissional")
+st.title("🏗️ Orçamentador Flexível")
 
 u1, u2 = st.columns(2)
 with u1:
@@ -89,14 +85,11 @@ with u2:
     arq_mp = st.file_uploader("💰 MP Valores", type=["xlsx", "csv"])
 
 if arq_obra and arq_mp:
-    # Carregamento da Base MP
+    # Carregamento MP
     try:
-        if arq_mp.name.endswith('.csv'):
-            df_mp = pd.read_csv(arq_mp)
-        else:
-            df_mp = pd.read_excel(arq_mp, sheet_name='MP')
+        df_mp = pd.read_csv(arq_mp) if arq_mp.name.endswith('.csv') else pd.read_excel(arq_mp)
     except:
-        df_mp = pd.read_excel(arq_mp) if not arq_mp.name.endswith('.csv') else None
+        df_mp = None
 
     if st.session_state.df_obra is None:
         df = pd.read_excel(arq_obra, skiprows=7).dropna(how='all', axis=0)
@@ -104,20 +97,26 @@ if arq_obra and arq_mp:
         df['Custo Unitário Final'] = 0.0
         st.session_state.df_obra = df
     
-    # Exibição da Tabela Master
-    st.write("### Itens para Orçamento")
-    selecao = st.dataframe(
+    st.write("### Planilha Master (Editável)")
+    st.info("Você pode editar os dados diretamente na tabela abaixo ou usar o botão Detalhar.")
+
+    # TABELA PRINCIPAL 100% EDITÁVEL
+    df_master_editado = st.data_editor(
         st.session_state.df_obra,
         use_container_width=True,
-        on_select="rerun",
-        selection_mode="single-row"
+        hide_index=False,
+        num_rows="dynamic",
+        key="master_editor"
     )
+    st.session_state.df_obra = df_master_editado
 
-    if len(selecao.selection.rows) > 0:
-        idx_sel = selecao.selection.rows[0]
-        row_sel = st.session_state.df_obra.iloc[idx_sel]
-        
-        if st.button(f"🔎 Detalhar: {row_sel.iloc[2]}", type="primary"):
-            abrir_cpu(idx_sel, row_sel, df_mp)
+    # Sistema de seleção para o Modal
+    st.divider()
+    idx_selecionado = st.number_input("Digite o número do índice da linha para detalhar (lado esquerdo):", 
+                                     min_value=0, max_value=len(st.session_state.df_obra)-1, step=1)
+    
+    if st.button(f"🔎 Abrir Detalhamento da Linha {idx_selecionado}", type="primary"):
+        abrir_cpu(idx_selecionado, st.session_state.df_obra.iloc[idx_selecionado], df_mp)
+
 else:
     st.session_state.df_obra = None
