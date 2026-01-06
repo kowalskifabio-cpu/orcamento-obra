@@ -57,4 +57,56 @@ def abrir_modal_edicao(index, dados_linha, df_mp):
         val_mo = f2.number_input("Valor Unitário Mão de Obra (R$)", value=0.0, format="%.2f")
         
         # Próximas regras entrarão aqui
-        st.caption("Próximas fórmulas
+        st.caption("Próximas fórmulas automáticas serão configuradas aqui.")
+
+        if st.form_submit_button("Concluir e Salvar"):
+            st.session_state.respostas[index] = {
+                "Concluído": "✅",
+                "Desc": nova_desc,
+                "Venda": (val_mat + val_mo) * 1.2 # Exemplo de markup
+            }
+            st.rerun()
+
+# --- 3. UPLOAD ---
+st.title("🏗️ Orçamentador Universal")
+col_u1, col_u2 = st.columns(2)
+with col_u1:
+    arq_obra = st.file_uploader("📋 Planilha da CONSTRUTORA", type=["xlsx", "csv"])
+with col_up2:
+    arq_mp = st.file_uploader("💰 MP Valores", type=["xlsx", "csv"])
+
+# --- 4. EXIBIÇÃO ---
+if arq_obra and arq_mp:
+    try:
+        # Lemos a obra por completo
+        df_obra = pd.read_excel(arq_obra, skiprows=7) if arq_obra.name.endswith('.xlsx') else pd.read_csv(arq_obra, skiprows=7)
+        
+        # Lemos a MP
+        dict_mp = pd.read_excel(arq_mp, sheet_name=None)
+        df_mp = pd.concat(dict_mp.values(), ignore_index=True)
+
+        st.markdown("---")
+        st.subheader("Planilha da Construtora")
+        st.caption("Role para os lados para ver todas as colunas. Clique em 'Editar' para abrir o pop-up.")
+
+        # Criamos a área de scroll
+        for i, row in df_obra.iterrows():
+            status = st.session_state.respostas.get(i, {}).get("Concluído", "⭕")
+            
+            # Layout de linha horizontal larga
+            with st.container(border=True):
+                # Primeira coluna com botão e status, as demais são os dados do Excel
+                cols = st.columns([0.5, 1] + [2] * (len(df_obra.columns) - 1))
+                cols[0].write(status)
+                if cols[1].button("Editar", key=f"ed_{i}"):
+                    abrir_modal_edicao(i, row, df_mp)
+                
+                # Preenche o resto da linha com as colunas originais
+                for idx, valor in enumerate(row):
+                    if idx < len(cols) - 2: # Limite para não estourar as colunas criadas
+                        cols[idx+2].write(f"{valor}" if pd.notnull(valor) else "")
+
+    except Exception as e:
+        st.error(f"Erro ao processar: {e}")
+else:
+    st.warning("Suba os arquivos para ver a planilha completa.")
