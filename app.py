@@ -51,4 +51,41 @@ u1, u2 = st.columns(2)
 with u1:
     arq_obra = st.file_uploader("📋 Planilha CONSTRUTORA", type=["xlsx", "csv"])
 with u2:
-    arq_mp = st.file_uploader("💰 MP Valores", type=["xlsx",
+    arq_mp = st.file_uploader("💰 MP Valores", type=["xlsx", "csv"])
+
+# --- 4. EXIBIÇÃO ---
+if arq_obra and arq_mp:
+    try:
+        # Lê a obra sem filtros para não perder dados
+        df = pd.read_excel(arq_obra, skiprows=7) if arq_obra.name.endswith('.xlsx') else pd.read_csv(arq_obra, skiprows=7)
+        
+        # Lê MP
+        dict_mp = pd.read_excel(arq_mp, sheet_name=None)
+        df_mp = pd.concat(dict_mp.values(), ignore_index=True)
+
+        # PAGINAÇÃO
+        linhas_por_pagina = 50
+        total_paginas = (len(df) // linhas_por_pagina) + 1
+        pag = st.sidebar.number_input("Página", min_value=1, max_value=total_paginas, step=1)
+        inicio = (pag - 1) * linhas_por_pagina
+        fim = inicio + linhas_por_pagina
+
+        st.write(f"Mostrando linhas {inicio} a {fim} de {len(df)}")
+        
+        # Tabela de visualização rápida
+        for i in range(inicio, min(fim, len(df))):
+            row = df.iloc[i]
+            status = st.session_state.respostas.get(i, {}).get("Status", "⭕")
+            
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns([0.5, 1, 6, 1])
+                c1.write(status)
+                c2.write(f"Linh. {i+8}") # Indica a linha real do Excel
+                c3.write(str(row.iloc[1]) if pd.notnull(row.iloc[1]) else "---")
+                if c4.button("Editar", key=f"btn_{i}"):
+                    modal_edicao(i, row, df_mp)
+
+    except Exception as e:
+        st.error(f"Erro: {e}")
+else:
+    st.info("Aguardando arquivos...")
