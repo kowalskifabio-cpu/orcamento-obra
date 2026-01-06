@@ -10,24 +10,39 @@ if 'df_obra' not in st.session_state: st.session_state.df_obra = None
 if 'df_mp' not in st.session_state: st.session_state.df_mp = None
 if 'composicoes' not in st.session_state: st.session_state.composicoes = {}
 
-# --- 2. FUNÇÃO DE BUSCA NA BASE MP ---
+# --- 2. FUNÇÃO DE BUSCA CORRIGIDA (Foco em NOME PRODUTO) ---
 def buscar_dados_mp(descricao_pesquisada):
-    if st.session_state.df_mp is None:
-        return "un", 0.0
+    if st.session_state.df_mp is None or not descricao_pesquisada:
+        return None, None
     
     base = st.session_state.df_mp
-    # Busca aproximada (contém o nome)
-    match = base[base.astype(str).apply(lambda x: x.str.contains(descricao_pesquisada, case=False, na=False)).any(axis=1)]
+    termo = str(descricao_pesquisada).strip().lower()
+    
+    # Garante que a coluna NOME PRODUTO existe
+    col_nome = 'NOME PRODUTO' if 'NOME PRODUTO' in base.columns else base.columns[1]
+    
+    # 1. Tenta busca exata primeiro
+    match = base[base[col_nome].astype(str).str.lower() == termo]
+    
+    # 2. Se não achou exato, tenta "contém"
+    if match.empty:
+        match = base[base[col_nome].astype(str).str.lower().str.contains(termo, na=False)]
     
     if not match.empty:
-        # Pega o primeiro resultado encontrado
-        unidade = str(match['PÇIDADE'].iloc[0]) if 'PÇIDADE' in match.columns else "un"
-        custo = float(pd.to_numeric(match['VLR / PÇ.'].iloc[0], errors='coerce') or 0.0)
-        return unidade, custo
-    
-    return "un", 0.0
+        # Mapeia colunas solicitadas: PÇIDADE e VLR / PÇ.
+        unid_col = 'PÇIDADE' if 'PÇIDADE' in match.columns else 'PÇIDADE'
+        vlr_col = 'VLR / PÇ.' if 'VLR / PÇ.' in match.columns else 'VLR / PÇ.'
+        
+        try:
+            unidade = str(match[unid_col].iloc[0])
+            custo = float(pd.to_numeric(match[vlr_col].iloc[0], errors='coerce') or 0.0)
+            return unidade, custo
+        except:
+            return "un", 0.0
+            
+    return None, None
 
-# --- 3. CAIXA DE DETALHAMENTO COM LÓGICA DE BUSCA ---
+# --- 3. CAIXA DE DETALHAMENTO ---
 @st.dialog("Composição Técnica por Grupos", width="large")
 def abrir_cpu_detalhada(idx, dados_linha):
     st.write(f"### 🛠️ Item: {dados_linha.get('DESCRIÇÃO', 'Item')}")
@@ -42,7 +57,7 @@ def abrir_cpu_detalhada(idx, dados_linha):
 
     comp = st.session_state.composicoes[idx]
 
-    def renderizar_bloco(titulo, chave, label_fator):
+    def renderizar_bloco(titulo, chave):
         st.subheader(f"📦 {titulo}")
         
         # Editor de Tabela
@@ -50,40 +65,44 @@ def abrir_cpu_detalhada(idx, dados_linha):
             comp[chave],
             num_rows="dynamic",
             column_config={
-                "Descrição": st.column_config.TextColumn("Descrição (Digite para buscar)"),
-                "Unid.": st.column_config.TextColumn("Unid. (Auto)"),
-                "Valor Unit.": st.column_config.NumberColumn("Custo (Auto)", format="R$ %.2f"),
-                "Valor Total": st.column_config.NumberColumn("Subtotal", format="R$ %.2f", disabled=True),
+                "Descrição": st.column_config.TextColumn("Descrição (NOME PRODUTO)"),
+                "Unid.": st.column_config.TextColumn("Unid. (MP)"),
+                "Valor Unit.": st.column_config.NumberColumn("Custo (VLR / PÇ.)", format="R$ %.2f"),
+                "Valor Total": st.column_config.NumberColumn("Total", format="R$ %.2f", disabled=True),
             },
             use_container_width=True,
-            key=f"editor_{chave}_{idx}"
+            key=f"ed_{chave}_{idx}"
         )
 
-        # LÓGICA DE ATUALIZAÇÃO AUTOMÁTICA
+        # Lógica de preenchimento automático ao mudar a descrição
         if not df_edit.empty:
             for i, row in df_edit.iterrows():
-                # Se o usuário digitou uma descrição mas a unidade/custo estão zerados, tenta buscar
-                if pd.notnull(row['Descrição']) and row['Descrição'] != "" and row['Valor Unit.'] == 0:
-                    u, c = buscar_dados_mp(row['Descrição'])
-                    df_edit.at[i, 'Unid.'] = u
-                    df_edit.at[i, 'Valor Unit.'] = c
+                desc = row.get('Descrição')
+                # Só busca se tiver descrição e o valor ainda for zero (para não sobrescrever ajustes manuais)
+                if desc and (pd.isna(row.get('Valor Unit.')) or row.get('Valor Unit.') == 0):
+                    u, c = buscar_dados_mp(desc)
+                    if u is not None:
+                        df_edit.at[i, 'Unid.'] = u
+                        df_edit.at[i, 'Valor Unit.'] = c
             
+            # Cálculo do Total do Item
             df_edit["Valor Total"] = pd.to_numeric(df_edit["Quant."], errors='coerce').fillna(0) * \
                                      pd.to_numeric(df_edit["Valor Unit."], errors='coerce').fillna(0)
+            
             st.session_state.composicoes[idx][chave] = df_edit
             return df_edit["Valor Total"].sum()
         return 0.0
 
-    t1 = renderizar_bloco("Material Terceirizado", "terceirizado", "Acréscimo (%)")
-    t2 = renderizar_bloco("Material Terceirizado C/ Serviço", "servico", "Multiplicador (x)")
-    t3 = renderizar_bloco("Material", "material", "Multiplicador (x)")
+    t1 = renderizar_bloco("Material Terceirizado", "terceirizado")
+    t2 = renderizar_bloco("Material Terceirizado C/ Serviço", "servico")
+    t3 = renderizar_bloco("Material", "material")
 
     st.divider()
-    total_custo_direto = t1 + t2 + t3
-    st.metric("Custo Direto Total", f"R$ {total_custo_direto:,.2f}")
+    total_direto = t1 + t2 + t3
+    st.metric("Custo Direto Total", f"R$ {total_direto:,.2f}")
 
-    if st.button("✅ Salvar e Atualizar Planilha Master"):
-        st.session_state.df_obra.at[idx, 'CUSTO UNITÁRIO FINAL'] = total_custo_direto
+    if st.button("✅ Salvar Composição"):
+        st.session_state.df_obra.at[idx, 'CUSTO UNITÁRIO FINAL'] = total_direto
         st.session_state.df_obra.at[idx, 'STATUS'] = "✅"
         st.rerun()
 
@@ -96,12 +115,11 @@ with u2:
     arq_mp = st.file_uploader("💰 MP Valores", type=["xlsx", "csv"])
 
 if arq_obra and arq_mp:
-    # Carregamento e identificação de colunas da MP
     if st.session_state.df_mp is None:
-        if arq_mp.name.endswith('.csv'):
-            st.session_state.df_mp = pd.read_csv(arq_mp)
-        else:
-            st.session_state.df_mp = pd.read_excel(arq_mp)
+        # Carrega a MP e limpa nomes de colunas
+        df_mp_raw = pd.read_csv(arq_mp) if arq_mp.name.endswith('.csv') else pd.read_excel(arq_mp)
+        df_mp_raw.columns = [str(c).strip() for c in df_mp_raw.columns]
+        st.session_state.df_mp = df_mp_raw
 
     if st.session_state.df_obra is None:
         df = pd.read_excel(arq_obra, skiprows=7).dropna(how='all', axis=0)
