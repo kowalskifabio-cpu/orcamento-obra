@@ -6,7 +6,7 @@ import os
 
 st.set_page_config(page_title="Orçamentador Pro", layout="wide")
 
-# --- LOGO ---
+# --- 1. LOGO ---
 nome_logo = "WhatsApp Image 2026-01-06 at 08.45.15.jpeg"
 if os.path.exists(nome_logo):
     st.sidebar.image(Image.open(nome_logo), use_container_width=True)
@@ -15,59 +15,61 @@ if os.path.exists(nome_logo):
 if 'df_obra' not in st.session_state:
     st.session_state.df_obra = None
 if 'cpus' not in st.session_state:
-    st.session_state.cpus = {} # Guarda a composição de cada linha
+    st.session_state.cpus = {} 
 
-# --- FUNÇÃO DE CÁLCULO DA CPU (Baseado nas linhas 240-294) ---
+# --- 2. MODAL DE COMPOSIÇÃO TÉCNICA ---
 @st.dialog("Detalhamento da Composição (CPU)", width="large")
-def abrir_cpu(idx, descricao_item):
-    st.write(f"### 🛠️ Composição Técnica: {descricao_item}")
+def abrir_cpu(idx, dados_linha):
+    # Traz a Descrição e as Observações originais da planilha
+    desc_original = str(dados_linha.iloc[1]) # Coluna B
+    obs_original = str(dados_linha.get('OBSERVAÇÕES', ''))
     
-    # Se não existe composição para esta linha, cria uma vazia com a estrutura da aba "Base"
+    st.write(f"### 📋 Item: {desc_original}")
+    st.markdown(f"**Observações da Construtora:** {obs_original}")
+    
+    # Inicializa CPU se vazio
     if idx not in st.session_state.cpus:
         st.session_state.cpus[idx] = pd.DataFrame(columns=[
-            "Tipo", "Descrição Insumo", "Unid", "Consumo/Qtd", "Preço Unit. (MP)", "Subtotal"
+            "Tipo", "Insumo/Material", "Unid", "Qtd", "Preço Unit. (MP)", "Observações Técnicas", "Subtotal"
         ])
 
     df_atual = st.session_state.cpus[idx]
 
-    # Interface de edição da CPU
     with st.container(border=True):
-        st.write("**Insumos e Serviços para este item:**")
+        st.write("#### 🛠️ Composição Técnica de Insumos")
         
-        # Editor de tabela para os insumos
+        # TABELA EDITÁVEL COM OBSERVAÇÕES
         df_editado = st.data_editor(
             df_atual,
-            num_rows="dynamic", # PERMITE INCLUIR E EXCLUIR LINHAS MANUALMENTE
+            num_rows="dynamic",
             column_config={
                 "Tipo": st.column_config.SelectboxColumn("Tipo", options=["Material", "Mão de Obra", "Terceirizado", "Ferragem"]),
                 "Preço Unit. (MP)": st.column_config.NumberColumn("Custo Unit. (R$)", format="R$ %.2f"),
+                "Observações Técnicas": st.column_config.TextColumn("Observações (Detalhes do Insumo)", width="large"),
                 "Subtotal": st.column_config.NumberColumn("Subtotal", format="R$ %.2f", disabled=True),
             },
             use_container_width=True,
             key=f"cpu_editor_{idx}"
         )
 
-        # Cálculo automático do Subtotal por linha e Total Geral
+        # Cálculo de Totais
         if not df_editado.empty:
-            df_editado["Subtotal"] = df_editado["Consumo/Qtd"].fillna(0) * df_editado["Preço Unit. (MP)"].fillna(0)
-            total_custo_direto = df_editado["Subtotal"].sum()
+            df_editado["Subtotal"] = df_editado["Qtd"].fillna(0) * df_editado["Preço Unit. (MP)"].fillna(0)
+            total_direto = df_editado["Subtotal"].sum()
         else:
-            total_custo_direto = 0.0
+            total_direto = 0.0
 
         st.divider()
-        col_res1, col_res2 = st.columns(2)
-        col_res1.metric("Custo Direto Total", f"R$ {total_custo_direto:,.2f}")
+        st.metric("Custo Direto Total", f"R$ {total_direto:,.2f}")
         
-        if st.button("💾 Salvar Composição e Fechar"):
+        if st.button("✅ Salvar Composição e Atualizar Planilha"):
             st.session_state.cpus[idx] = df_editado
-            # Atualiza a planilha principal com o custo calculado
-            st.session_state.df_obra.at[idx, 'Custo Unitário Final'] = total_custo_direto
+            st.session_state.df_obra.at[idx, 'Custo Unitário Final'] = total_direto
             st.session_state.df_obra.at[idx, 'Status'] = "✅"
             st.rerun()
 
-# --- INTERFACE PRINCIPAL ---
-st.title("🏗️ Sistema de Orçamento - Marcenaria & Mármore")
-
+# --- 3. INTERFACE DE UPLOAD ---
+st.title("🏗️ Orçamentador Marcenaria & Mármore")
 u1, u2 = st.columns(2)
 with u1:
     arq_obra = st.file_uploader("📋 Planilha da CONSTRUTORA", type=["xlsx", "csv"])
@@ -76,33 +78,28 @@ with u2:
 
 if arq_obra and arq_mp:
     if st.session_state.df_obra is None:
-        # Lê a planilha da construtora
+        # Lê a planilha e garante que traz todas as colunas (incluindo Observações)
         df = pd.read_excel(arq_obra, skiprows=7).dropna(how='all', axis=0)
         df.insert(0, 'Status', '⭕')
         df['Custo Unitário Final'] = 0.0
         st.session_state.df_obra = df
     
-    st.write("### Itens da Obra")
-    st.caption("Clique em uma linha para detalhar a composição de materiais e serviços.")
-
-    # Exibição da planilha para seleção
-    tabela_obra = st.dataframe(
+    st.write("### Itens para Orçar")
+    # Tabela principal com barra de rolagem
+    selecao = st.dataframe(
         st.session_state.df_obra,
         use_container_width=True,
         on_select="rerun",
-        selection_mode="single-row",
-        hide_index=False
+        selection_mode="single-row"
     )
 
-    # Lógica para abrir o detalhamento se houver seleção
-    if len(tabela_obra.selection.rows) > 0:
-        idx_selecionado = tabela_obra.selection.rows[0]
-        row_data = st.session_state.df_obra.iloc[idx_selecionado]
+    if len(selecao.selection.rows) > 0:
+        idx_sel = selecao.selection.rows[0]
+        row_sel = st.session_state.df_obra.iloc[idx_sel]
         
-        # Botão flutuante para abrir o detalhamento
-        if st.button(f"🔎 Detalhar: {row_data.iloc[2]}", type="primary"):
-            abrir_cpu(idx_selecionado, row_data.iloc[2])
-
+        # Botão para detalhar
+        if st.button(f"🔎 Detalhar Composição: {row_sel.iloc[2]}", type="primary"):
+            abrir_cpu(idx_sel, row_sel)
 else:
     st.session_state.df_obra = None
-    st.info("Por favor, carregue os arquivos para iniciar a orçamentação.")
+    st.info("Aguardando os arquivos para gerar a composição...")
