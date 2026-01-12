@@ -1,19 +1,20 @@
 import streamlit as st
 import pandas as pd
 import json
+import os
 from io import BytesIO
 from datetime import datetime
 
-st.set_page_config(page_title="Orçamentador Marcenaria v19", layout="wide")
+st.set_page_config(page_title="Orçamentador Marcenaria Pro", layout="wide")
 
-# --- 1. INICIALIZAÇÃO DE MEMÓRIA ---
+# --- 1. MEMÓRIA DO SISTEMA ---
 if 'df_obra' not in st.session_state: st.session_state.df_obra = None
 if 'df_mp' not in st.session_state: st.session_state.df_mp = None
 if 'composicoes' not in st.session_state: st.session_state.composicoes = {}
 if 'taxas' not in st.session_state:
-    st.session_state.taxas = {"imposto": 15.0, "frete": 3.0, "comissao": 5.0, "lucro": 20.0}
+    st.session_state.taxas = {"imposto": 15.0, "frete": 3.0, "lucro": 20.0, "comissao": 5.0}
 
-# --- 2. FUNÇÕES DE APOIO (BUSCA E PROJETO) ---
+# --- 2. FUNÇÕES DE BUSCA E APOIO ---
 def buscar_dados_mp(desc):
     if st.session_state.df_mp is None or not desc: return None, None
     termo = str(desc).strip().lower()
@@ -36,33 +37,14 @@ def exportar_projeto_json():
     }
     return json.dumps(projeto)
 
-def carregar_projeto_json(arquivo_json):
-    dados = json.load(arquivo_json)
-    if dados["df_obra"]: st.session_state.df_obra = pd.read_json(dados["df_obra"], orient="split").reset_index(drop=True)
-    if "taxas" in dados: st.session_state.taxas = dados["taxas"]
-    st.session_state.composicoes = {int(k): {b: pd.read_json(js, orient="split") for b, js in v.items()} for k, v in dados["composicoes"].items()}
-
-# --- 3. GERAÇÃO DE RELATÓRIOS (ANALÍTICO E LISTÃO) ---
-def gerar_dados_consolidados():
-    lista = []
-    for idx, blocos in st.session_state.composicoes.items():
-        master = st.session_state.df_obra.at[idx, 'DESCRIÇÃO']
-        for tipo, df in blocos.items():
-            if not df.empty:
-                df_c = df.copy()
-                df_c['ITEM_MASTER'] = master
-                df_c['TIPO_GRUPO'] = tipo.upper()
-                lista.append(df_c)
-    return pd.concat(lista, ignore_index=True) if lista else pd.DataFrame()
-
-# --- 4. COMPONENTE DE BLOCO TÉCNICO ---
+# --- 3. COMPONENTE DE BLOCO TÉCNICO (FRAGMENTO) ---
 @st.fragment
 def renderizar_bloco(idx, chave, titulo, tipo_fator):
     st.markdown(f"#### 📦 {titulo}")
     df_memoria = st.session_state.composicoes[idx][chave].reset_index(drop=True)
     df_memoria["Código"] = range(1, len(df_memoria) + 1)
 
-    df_ed = st.data_editor(df_memoria, num_rows="dynamic", use_container_width=True, key=f"v19_{chave}_{idx}")
+    df_ed = st.data_editor(df_memoria, num_rows="dynamic", use_container_width=True, key=f"ed_v19_{chave}_{idx}")
 
     if not df_ed.equals(df_memoria):
         df_ed = df_ed.reset_index(drop=True)
@@ -81,10 +63,10 @@ def renderizar_bloco(idx, chave, titulo, tipo_fator):
         st.rerun(scope="fragment")
     return st.session_state.composicoes[idx][chave]["Valor Final"].sum()
 
-# --- 5. MODAL DE DETALHAMENTO ---
-@st.dialog("CPU - Composição Técnica", width="large")
+# --- 4. DIÁLOGO DE COMPOSIÇÃO ---
+@st.dialog("Composição Técnica (CPU)", width="large")
 def modal_cpu(idx, linha):
-    st.write(f"### 📋 {linha.get('DESCRIÇÃO', 'Item')}")
+    st.write(f"### 📋 Item: {linha.get('DESCRIÇÃO', 'Item')}")
     if idx not in st.session_state.composicoes:
         cols = ["Código", "Descrição", "Quant.", "Unid.", "Valor Unit.", "Valor Total", "Fator", "Valor Final"]
         st.session_state.composicoes[idx] = {b: pd.DataFrame(columns=cols) for b in ["terceirizado", "servico", "material"]}
@@ -94,42 +76,41 @@ def modal_cpu(idx, linha):
     v3 = renderizar_bloco(idx, "material", "Material", "mult")
     
     c_direto = v1 + v2 + v3
-    bdi = sum(st.session_state.taxas.values())
-    venda = c_direto * (1 + (bdi / 100))
+    bdi_total = sum(st.session_state.taxas.values())
+    venda_final = c_direto * (1 + (bdi_total / 100))
 
     st.divider()
-    st.metric("PREÇO FINAL (COM BDI)", f"R$ {venda:,.2f}", delta=f"Custo Direto: R$ {c_direto:,.2f}")
+    st.metric("PREÇO DE VENDA FINAL", f"R$ {venda_final:,.2f}", delta=f"Custo Direto: R$ {c_direto:,.2f}")
     if st.button("💾 Salvar no Orçamento Master", type="primary"):
-        st.session_state.df_obra.at[idx, 'CUSTO UNITÁRIO FINAL'] = venda
+        st.session_state.df_obra.at[idx, 'CUSTO UNITÁRIO FINAL'] = venda_final
         st.session_state.df_obra.at[idx, 'STATUS'] = "✅"
         st.rerun(scope="app")
 
-# --- 6. INTERFACE PRINCIPAL ---
+# --- 5. INTERFACE PRINCIPAL ---
 with st.sidebar:
-    st.image("logo.png") # Carrega do seu repositório
-    st.header("⚙️ Gestão")
-    if st.session_state.df_obra is not None:
-        st.download_button("📥 Salvar Projeto (.json)", exportar_projeto_json(), "projeto.json")
+    # Correção do erro MediaFileStorageError
+    if os.path.exists("logo.png"):
+        st.image("logo.png")
+    else:
+        st.title("🪚 Marcenaria Pro")
     
-    arq_json = st.file_uploader("📂 Retomar Projeto", type=["json"])
-    if arq_json and st.button("Restaurar Dados"):
-        carregar_projeto_json(arq_json)
-        st.rerun()
-
-    st.divider()
-    st.header("⚖️ Taxas Globais (%)")
+    st.header("⚙️ Configurações Globais (%)")
     for k in st.session_state.taxas:
         st.session_state.taxas[k] = st.number_input(f"{k.capitalize()}", value=st.session_state.taxas[k])
+    
+    st.divider()
+    if st.session_state.df_obra is not None:
+        st.download_button("📥 Salvar Progresso (.json)", exportar_projeto_json(), "projeto_orcamento.json")
 
-st.title("🏗️ Orçamentador Profissional")
+st.title("🏗️ Sistema de Orçamentação e Produção")
 
-# ABAS DE TRABALHO
-tab1, tab2, tab3 = st.tabs(["📝 Orçamento", "🔍 Auditoria Analítica", "🛒 Listão de Compras"])
+tabs = st.tabs(["📝 Orçamento Master", "🔍 Relatório Analítico", "🛒 Listão de Compras", "📄 Proposta Comercial"])
 
-with tab1:
+# TAB 1: ORÇAMENTO MASTER
+with tabs[0]:
     c1, c2 = st.columns(2)
-    with c1: arq_o = st.file_uploader("Planilha Obra", type=["xlsx", "xlsm"])
-    with c2: arq_m = st.file_uploader("MP Valores", type=["xlsx", "csv"])
+    with c1: arq_o = st.file_uploader("Subir Planilha Obra", type=["xlsx", "xlsm"])
+    with c2: arq_m = st.file_uploader("Subir MP Valores", type=["xlsx", "csv"])
 
     if arq_o and arq_m:
         if st.session_state.df_mp is None:
@@ -142,27 +123,53 @@ with tab1:
             st.session_state.df_obra.insert(0, 'STATUS', '⭕')
             st.session_state.df_obra['CUSTO UNITÁRIO FINAL'] = 0.0
 
-        st.session_state.df_obra = st.data_editor(st.session_state.df_obra, use_container_width=True, key="master_v19")
-        idx_sel = st.number_input("Índice da linha:", 0, len(st.session_state.df_obra)-1, 0)
-        if st.button(f"🔎 Detalhar Linha {idx_sel}", type="primary"):
+        st.session_state.df_obra = st.data_editor(st.session_state.df_obra, use_container_width=True, key="master_table")
+        idx_sel = st.number_input("Selecione o índice da linha:", 0, len(st.session_state.df_obra)-1, 0)
+        if st.button(f"🔎 Detalhar Item {idx_sel}", type="primary"):
             modal_cpu(idx_sel, st.session_state.df_obra.iloc[idx_sel])
 
-with tab2:
-    st.subheader("Auditoria de Composições")
-    df_ana = gerar_dados_consolidados()
-    if not df_ana.empty:
-        st.dataframe(df_ana[['ITEM_MASTER', 'TIPO_GRUPO', 'Descrição', 'Quant.', 'Unid.', 'Valor Final']], use_container_width=True)
-    else: st.info("Nenhum item detalhado ainda.")
+# TAB 2: RELATÓRIO ANALÍTICO (AUDITORIA)
+with tabs[1]:
+    st.subheader("Auditoria de Composições (Explosão de Itens)")
+    dados_explodidos = []
+    for idx, comps in st.session_state.composicoes.items():
+        master_desc = st.session_state.df_obra.at[idx, 'DESCRIÇÃO']
+        for grupo, df in comps.items():
+            if not df.empty:
+                df_c = df.copy()
+                df_c['Item Master'] = master_desc
+                df_c['Categoria'] = grupo.upper()
+                dados_explodidos.append(df_c)
+    
+    if dados_explodidos:
+        df_total = pd.concat(dados_explodidos)
+        st.dataframe(df_total[['Item Master', 'Categoria', 'Descrição', 'Quant.', 'Unid.', 'Valor Unit.', 'Valor Final']], use_container_width=True)
+    else:
+        st.info("Nenhum item detalhado para auditoria.")
 
-with tab3:
-    st.subheader("Lista para o Setor de Compras")
-    df_ana = gerar_dados_consolidados()
-    if not df_ana.empty:
-        listao = df_ana.groupby(['Descrição', 'Unid.']).agg({'Quant.': 'sum', 'Valor Unit.': 'mean'}).reset_index()
+# TAB 3: LISTÃO DE COMPRAS
+with tabs[2]:
+    st.subheader("Consolidado de Materiais para Compra")
+    if dados_explodidos:
+        listao = pd.concat(dados_explodidos).groupby(['Descrição', 'Unid.']).agg({'Quant.': 'sum', 'Valor Unit.': 'mean'}).reset_index()
         st.dataframe(listao, use_container_width=True)
-        
-        # Exportação Excel do Listão
+        # Exportar Listão
         out = BytesIO()
         with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
             listao.to_excel(writer, index=False, sheet_name='Compras')
-        st.download_button("💾 Baixar Listão de Compras", out.getvalue(), "Listao_Compras.xlsx")
+        st.download_button("💾 Baixar Listão em Excel", out.getvalue(), "listao_compras.xlsx")
+    else:
+        st.info("Adicione itens na composição para gerar o listão.")
+
+# TAB 4: PROPOSTA COMERCIAL
+with tabs[3]:
+    st.subheader("Visualização da Proposta Comercial")
+    if st.session_state.df_obra is not None:
+        st.markdown(f"### PROPOSTA: {datetime.now().strftime('%d/%m/%Y')}")
+        orc_final = st.session_state.df_obra[st.session_state.df_obra['CUSTO UNITÁRIO FINAL'] > 0]
+        st.table(orc_final[['DESCRIÇÃO', 'UNID', 'QUANT', 'CUSTO UNITÁRIO FINAL']])
+        
+        total_geral = orc_final['CUSTO UNITÁRIO FINAL'].sum()
+        st.markdown(f"## TOTAL GERAL: R$ {total_geral:,.2f}")
+    else:
+        st.info("Carregue o projeto para visualizar a proposta.")
