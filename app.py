@@ -5,19 +5,24 @@ import os
 from io import BytesIO
 from datetime import datetime
 
-st.set_page_config(page_title="Orçamentador Marcenaria v22", layout="wide")
+st.set_page_config(page_title="Orçamentador Marcenaria v23", layout="wide")
 
-# --- 1. INICIALIZAÇÃO DE MEMÓRIA ---
-def inicializar_estado():
-    if 'df_obra' not in st.session_state: st.session_state.df_obra = None
-    if 'df_mp' not in st.session_state: st.session_state.df_mp = None
-    if 'composicoes' not in st.session_state: st.session_state.composicoes = {}
-    if 'taxas' not in st.session_state:
-        st.session_state.taxas = {"imposto": 15.0, "frete": 3.0, "lucro": 20.0, "comissao": 5.0}
+# --- 1. INICIALIZAÇÃO E TRATAMENTO DE COLUNAS ---
+if 'df_obra' not in st.session_state: st.session_state.df_obra = None
+if 'df_mp' not in st.session_state: st.session_state.df_mp = None
+if 'composicoes' not in st.session_state: st.session_state.composicoes = {}
+if 'taxas' not in st.session_state:
+    st.session_state.taxas = {"imposto": 15.0, "frete": 3.0, "lucro": 20.0, "comissao": 5.0}
 
-inicializar_estado()
+def obter_coluna_flexivel(df, nomes_possiveis):
+    """Retorna o nome real da coluna no DF a partir de uma lista de possibilidades."""
+    for nome in nomes_possiveis:
+        for col_real in df.columns:
+            if nome.upper() in str(col_real).upper().strip():
+                return col_real
+    return None
 
-# --- 2. FUNÇÕES DE PERSISTÊNCIA (JSON) ---
+# --- 2. PERSISTÊNCIA (JSON) BLINDADA ---
 def exportar_projeto_json():
     projeto = {
         "df_obra": st.session_state.df_obra.to_json(orient="split") if st.session_state.df_obra is not None else None,
@@ -32,14 +37,18 @@ def exportar_projeto_json():
 def carregar_projeto_json(arquivo_json):
     try:
         dados = json.load(arquivo_json)
-        # Limpa o estado atual antes de restaurar
         st.session_state.composicoes = {}
         
         if dados.get("df_obra"):
             df_temp = pd.read_json(dados["df_obra"], orient="split")
+            # Garante que os nomes das colunas fiquem limpos e padronizados
+            df_temp.columns = [str(c).strip().upper() for c in df_temp.columns]
             st.session_state.df_obra = df_temp.reset_index(drop=True)
-            if 'CUSTO UNITÁRIO FINAL' in st.session_state.df_obra.columns:
-                st.session_state.df_obra['CUSTO UNITÁRIO FINAL'] = pd.to_numeric(st.session_state.df_obra['CUSTO UNITÁRIO FINAL']).fillna(0.0)
+            
+            # Garante coluna de custo
+            col_custo = obter_coluna_flexivel(st.session_state.df_obra, ["CUSTO UNITÁRIO FINAL", "FINAL", "VALOR"])
+            if col_custo:
+                st.session_state.df_obra[col_custo] = pd.to_numeric(st.session_state.df_obra[col_custo], errors='coerce').fillna(0.0)
         
         if "taxas" in dados:
             st.session_state.taxas = dados["taxas"]
@@ -48,47 +57,63 @@ def carregar_projeto_json(arquivo_json):
             nova_comp = {}
             for idx_str, blocos in dados["composicoes"].items():
                 idx_int = int(idx_str)
-                nova_comp[idx_int] = {}
-                for nome_bloco, js in blocos.items():
-                    nova_comp[idx_int][nome_bloco] = pd.read_json(js, orient="split")
+                nova_comp[idx_int] = {b: pd.read_json(js, orient="split") for b, js in blocos.items()}
             st.session_state.composicoes = nova_comp
         return True
     except Exception as e:
-        st.error(f"Falha na restauração: {e}")
+        st.error(f"Erro ao restaurar: {e}")
         return False
 
-# --- 3. COMPONENTE DE BLOCO (FRAGMENTO) ---
+# --- 3. BUSCA NA MP ---
+def buscar_dados_mp(desc):
+    if st.session_state.df_mp is None or not desc: return None, None
+    termo = str(desc).strip().lower()
+    base = st.session_state.df_mp.copy()
+    col_n = obter_coluna_flexivel(base, ["NOME PRODUTO", "PRODUTO", "DESCRICAO"])
+    col_u = obter_coluna_flexivel(base, ["PÇIDADE", "UNID", "UN"])
+    col_p = obter_coluna_flexivel(base, ["VLR / PÇ.", "VALOR", "PRECO"])
+    
+    if not col_n: return None, None
+    
+    match = base[base[col_n].astype(str).str.strip().str.lower() == termo]
+    if match.empty:
+        match = base[base[col_n].astype(str).str.lower().str.contains(termo, na=False)]
+    
+    if not match.empty:
+        u = str(match[col_u].iloc[0]) if col_u else "un"
+        p = float(pd.to_numeric(match[col_p].iloc[0], errors='coerce') or 0.0)
+        return u, p
+    return "un", 0.0
+
+# --- 4. COMPONENTE DE BLOCO (FRAGMENTO) ---
 @st.fragment
 def renderizar_bloco(idx, chave, titulo, tipo_fator):
     st.markdown(f"#### 📦 {titulo}")
     df_mem = st.session_state.composicoes[idx][chave].reset_index(drop=True)
     df_mem["Código"] = range(1, len(df_mem) + 1)
 
-    df_ed = st.data_editor(df_mem, num_rows="dynamic", use_container_width=True, key=f"v22_{chave}_{idx}_{st.session_state.get('last_load', 0)}")
+    df_ed = st.data_editor(df_mem, num_rows="dynamic", use_container_width=True, key=f"v23_{chave}_{idx}_{st.session_state.get('last_load', 0)}")
 
     if not df_ed.equals(df_mem):
         df_ed = df_ed.reset_index(drop=True)
         df_ed["Código"] = range(1, len(df_ed) + 1)
         for i, r in df_ed.iterrows():
-            # Busca MP
             if r.get('Descrição') and (pd.isna(r.get('Valor Unit.')) or r.get('Valor Unit.') == 0):
                 u, p = buscar_dados_mp(r['Descrição'])
                 if u: df_ed.at[i, 'Unid.'], df_ed.at[i, 'Valor Unit.'] = u, p
             
-            # Cálculos
             q = float(pd.to_numeric(r.get('Quant.'), errors='coerce') or 0.0)
             vu = float(pd.to_numeric(df_ed.at[i, 'Valor Unit.'], errors='coerce') or 0.0)
             fat = float(pd.to_numeric(r.get('Fator'), errors='coerce') or (0.0 if tipo_fator == "perc" else 1.0))
             custo = q * vu
             df_ed.at[i, "Valor Total"] = custo
             df_ed.at[i, "Valor Final"] = custo * (1 + (fat/100)) if tipo_fator == "perc" else custo * (fat if fat != 0 else 1)
-        
         st.session_state.composicoes[idx][chave] = df_ed
         st.rerun(scope="fragment")
     return st.session_state.composicoes[idx][chave]["Valor Final"].sum()
 
-# --- 4. DIÁLOGO DE DETALHAMENTO ---
-@st.dialog("Detalhamento Técnico", width="large")
+# --- 5. DIÁLOGO DE DETALHAMENTO ---
+@st.dialog("Composição Técnica", width="large")
 def modal_cpu(idx, linha):
     st.write(f"### 📋 Item: {linha.get('DESCRIÇÃO', 'Item')}")
     if idx not in st.session_state.composicoes:
@@ -104,40 +129,24 @@ def modal_cpu(idx, linha):
     venda = c_direto * (1 + (bdi / 100))
 
     st.divider()
-    st.metric("PREÇO DE VENDA SUGERIDO", f"R$ {venda:,.2f}", delta=f"Custo Direto: R$ {c_direto:,.2f}")
-    if st.button("💾 Aplicar Preço na Planilha Principal"):
+    st.metric("PREÇO DE VENDA", f"R$ {venda:,.2f}", delta=f"Custo Direto: R$ {c_direto:,.2f}")
+    if st.button("💾 Salvar no Orçamento"):
         st.session_state.df_obra.at[idx, 'CUSTO UNITÁRIO FINAL'] = venda
         st.session_state.df_obra.at[idx, 'STATUS'] = "✅"
         st.rerun(scope="app")
 
-# --- 5. BUSCA NA MP ---
-def buscar_dados_mp(desc):
-    if st.session_state.df_mp is None or not desc: return None, None
-    termo = str(desc).strip().lower()
-    base = st.session_state.df_mp.copy()
-    col_n = next((c for c in base.columns if 'NOME PRODUTO' in c.upper()), None)
-    col_u = next((c for c in base.columns if 'PÇIDADE' in c.upper()), None)
-    col_p = next((c for c in base.columns if 'VLR / PÇ.' in c.upper()), None)
-    if not col_n: return None, None
-    match = base[base[col_n].astype(str).str.strip().str.lower() == termo]
-    if match.empty: match = base[base[col_n].astype(str).str.lower().str.contains(termo, na=False)]
-    if not match.empty:
-        return str(match[col_u].iloc[0]), float(pd.to_numeric(match[col_p].iloc[0], errors='coerce') or 0.0)
-    return "un", 0.0
-
 # --- 6. INTERFACE ---
 with st.sidebar:
     if os.path.exists("logo.png"): st.image("logo.png")
-    st.header("💾 Gestão de Projeto")
+    st.header("💾 Gestão")
     if st.session_state.df_obra is not None:
-        st.download_button("📥 Baixar Backup JSON", exportar_projeto_json(), f"projeto_{datetime.now().strftime('%d_%H%M')}.json")
+        st.download_button("📥 Baixar JSON", exportar_projeto_json(), f"orcamento_{datetime.now().strftime('%H%M')}.json")
     
     arq_proj = st.file_uploader("📂 Retomar Projeto", type=["json"])
-    if arq_proj:
-        if st.button("🔄 Restaurar Dados"):
-            if carregar_projeto_json(arq_proj):
-                st.session_state.last_load = datetime.now().timestamp()
-                st.rerun()
+    if arq_proj and st.button("🔄 Restaurar Dados"):
+        if carregar_projeto_json(arq_proj):
+            st.session_state.last_load = datetime.now().timestamp()
+            st.rerun()
 
     st.divider()
     st.header("⚖️ Taxas (%)")
@@ -149,46 +158,60 @@ tabs = st.tabs(["📝 Orçamento", "🔍 Auditoria", "🛒 Compras", "📄 Propo
 
 with tabs[0]:
     c1, c2 = st.columns(2)
-    with c1: arq_o = st.file_uploader("Planilha Obra", type=["xlsx", "xlsm"])
-    with c2: arq_m = st.file_uploader("Planilha MP", type=["xlsx", "csv"])
+    with c1: arq_o = st.file_uploader("Obra (.xlsm)", type=["xlsx", "xlsm"])
+    with c2: arq_m = st.file_uploader("MP (.xlsx)", type=["xlsx", "csv"])
     
     if arq_o and arq_m:
         if st.session_state.df_mp is None:
             st.session_state.df_mp = pd.read_excel(arq_m)
-            st.session_state.df_mp.columns = [str(c).strip() for c in st.session_state.df_mp.columns]
         if st.session_state.df_obra is None:
             df = pd.read_excel(arq_o, skiprows=7).dropna(how='all', axis=0).reset_index(drop=True)
-            df.columns = [str(c).upper() for c in df.columns]
+            df.columns = [str(c).strip().upper() for c in df.columns]
             df.insert(0, 'STATUS', '⭕')
             df['CUSTO UNITÁRIO FINAL'] = 0.0
             st.session_state.df_obra = df
         
-        st.session_state.df_obra = st.data_editor(st.session_state.df_obra, use_container_width=True, key=f"master_v22_{st.session_state.get('last_load', 0)}")
-        idx_sel = st.number_input("Selecione a linha:", 0, len(st.session_state.df_obra)-1, 0)
-        if st.button(f"🔎 Detalhar Item {idx_sel}", type="primary"):
+        st.session_state.df_obra = st.data_editor(st.session_state.df_obra, use_container_width=True, key=f"master_v23_{st.session_state.get('last_load', 0)}")
+        idx_sel = st.number_input("Índice:", 0, len(st.session_state.df_obra)-1, 0)
+        if st.button(f"🔎 Detalhar Linha {idx_sel}", type="primary"):
             modal_cpu(idx_sel, st.session_state.df_obra.iloc[idx_sel])
 
-# --- ABAS DE APOIO ---
-dados_consolidar = []
-if st.session_state.df_obra is not None:
-    for i, comps in st.session_state.composicoes.items():
-        for g, df in comps.items():
-            if not df.empty:
-                df_c = df.copy()
-                df_c['Item Master'] = st.session_state.df_obra.at[i, 'DESCRIÇÃO']
-                dados_consolidar.append(df_c)
-
+# --- ABAS DE RELATÓRIO COM TRATAMENTO DE ERRO (KeyError) ---
 with tabs[1]:
-    if dados_consolidar: st.dataframe(pd.concat(dados_consolidar), use_container_width=True)
-    else: st.info("Abra o detalhamento de um item para auditar.")
+    st.subheader("Auditoria Analítica")
+    dados = []
+    if st.session_state.df_obra is not None:
+        for i, comps in st.session_state.composicoes.items():
+            for g, df in comps.items():
+                if not df.empty:
+                    df_c = df.copy()
+                    col_desc = obter_coluna_flexivel(st.session_state.df_obra, ["DESCRIÇÃO", "NOME", "ITEM"])
+                    df_c['Item Master'] = st.session_state.df_obra.at[i, col_desc] if col_desc else "Item"
+                    dados.append(df_c)
+    if dados: st.dataframe(pd.concat(dados), use_container_width=True)
 
 with tabs[2]:
-    if dados_consolidar:
-        listao = pd.concat(dados_consolidar).groupby(['Descrição', 'Unid.']).agg({'Quant.': 'sum'}).reset_index()
+    st.subheader("Listão de Materiais")
+    if dados:
+        listao = pd.concat(dados).groupby(['Descrição', 'Unid.']).agg({'Quant.': 'sum'}).reset_index()
         st.dataframe(listao, use_container_width=True)
 
 with tabs[3]:
+    st.subheader("Proposta Comercial")
     if st.session_state.df_obra is not None:
-        venda_df = st.session_state.df_obra[st.session_state.df_obra['CUSTO UNITÁRIO FINAL'] > 0]
-        st.table(venda_df[['DESCRIÇÃO', 'UNID', 'QUANT', 'CUSTO UNITÁRIO FINAL']])
-        st.write(f"### TOTAL DO ORÇAMENTO: R$ {venda_df['CUSTO UNITÁRIO FINAL'].sum():,.2f}")
+        # Resolve o KeyError procurando os nomes reais das colunas
+        df_p = st.session_state.df_obra.copy()
+        c_desc = obter_coluna_flexivel(df_p, ["DESCRIÇÃO", "NOME"])
+        c_unid = obter_coluna_flexivel(df_p, ["UNID", "UN"])
+        c_quant = obter_coluna_flexivel(df_p, ["QUANT", "QTD"])
+        c_preco = obter_coluna_flexivel(df_p, ["CUSTO UNITÁRIO FINAL", "FINAL"])
+        
+        # Filtra apenas o que foi orçado
+        venda_df = df_p[df_p[c_preco] > 0] if c_preco else pd.DataFrame()
+        
+        cols_mostrar = [c for c in [c_desc, c_unid, c_quant, c_preco] if c is not None]
+        if not venda_df.empty:
+            st.table(venda_df[cols_mostrar])
+            st.write(f"### TOTAL DO ORÇAMENTO: R$ {venda_df[c_preco].sum():,.2f}")
+        else:
+            st.info("Nenhum item orçado para exibir na proposta.")
