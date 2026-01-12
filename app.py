@@ -3,25 +3,88 @@ import pandas as pd
 import json
 from io import BytesIO
 
-st.set_page_config(page_title="Orçamentador Marcenaria v16", layout="wide")
+st.set_page_config(page_title="Orçamentador Marcenaria v17", layout="wide")
 
-# --- 1. MEMÓRIA ---
+# --- 1. INICIALIZAÇÃO DE MEMÓRIA ---
 if 'df_obra' not in st.session_state: st.session_state.df_obra = None
 if 'df_mp' not in st.session_state: st.session_state.df_mp = None
 if 'composicoes' not in st.session_state: st.session_state.composicoes = {}
 
-# --- 2. CONFIGURAÇÕES TRIBUTÁRIAS E LOGÍSTICAS (Baseado na aba Tributos/Resumo) ---
-with st.sidebar:
-    st.header("⚖️ Impostos e Taxas (BDI)")
-    st.session_state.perc_imposto = st.number_input("Tributos/Impostos (%)", value=15.0, step=0.5)
-    st.session_state.perc_frete = st.number_input("Frete/Logística (%)", value=3.0, step=0.1)
-    st.session_state.perc_comissao = st.number_input("Comissão/Vendas (%)", value=5.0, step=0.5)
-    st.session_state.margem_lucro = st.number_input("Margem de Lucro Desejada (%)", value=20.0, step=1.0)
-    
-    st.divider()
-    st.info("Estas taxas serão aplicadas sobre o Custo Direto Total para gerar o Preço de Venda Final.")
+# Valores padrão para as taxas (caso não existam no JSON)
+if 'taxas' not in st.session_state:
+    st.session_state.taxas = {"imposto": 15.0, "frete": 3.0, "comissao": 5.0, "lucro": 20.0}
 
-# --- 3. FUNÇÕES DE BUSCA E CÁLCULO (Versão Estável v15+) ---
+# --- 2. FUNÇÕES DE PERSISTÊNCIA (SALVAR/CARREGAR) CORRIGIDAS ---
+def exportar_projeto_json():
+    """Gera o arquivo de salvamento completo incluindo taxas e composições."""
+    projeto = {
+        "df_obra": st.session_state.df_obra.to_json(orient="split") if st.session_state.df_obra is not None else None,
+        "taxas": st.session_state.taxas,
+        "composicoes": {
+            str(k): {bloco: df.to_json(orient="split") for bloco, df in v.items()}
+            for k, v in st.session_state.composicoes.items()
+        }
+    }
+    return json.dumps(projeto, indent=4)
+
+def carregar_projeto_json(arquivo_json):
+    """Restaura o projeto e converte chaves de texto para inteiro."""
+    try:
+        dados = json.load(arquivo_json)
+        # 1. Restaura Planilha Master
+        if dados["df_obra"]:
+            st.session_state.df_obra = pd.read_json(dados["df_obra"], orient="split")
+        
+        # 2. Restaura Taxas da Lateral
+        if "taxas" in dados:
+            st.session_state.taxas = dados["taxas"]
+            
+        # 3. Restaura Composições Detalhadas (Corrigindo o erro de string/int)
+        nova_comp = {}
+        for idx_str, blocos in dados["composicoes"].items():
+            idx_int = int(idx_str) # Converte "0" para 0
+            nova_comp[idx_int] = {
+                nome_bloco: pd.read_json(conteudo_json, orient="split") 
+                for nome_bloco, conteudo_json in blocos.items()
+            }
+        st.session_state.composicoes = nova_comp
+        return True
+    except Exception as e:
+        st.error(f"Erro ao carregar arquivo: {e}")
+        return False
+
+# --- 3. BARRA LATERAL (GESTÃO E TAXAS) ---
+with st.sidebar:
+    st.header("💾 Gestão do Projeto")
+    
+    # Botão de Download (Aparece se houver dados)
+    if st.session_state.df_obra is not None:
+        json_data = exportar_projeto_json()
+        st.download_button(
+            label="📥 Baixar Projeto Atual (.json)",
+            data=json_data,
+            file_name="projeto_orcamento.json",
+            mime="application/json"
+        )
+    
+    # Upload para retomar
+    st.divider()
+    st.subheader("Retomar Trabalho")
+    arq_subido = st.file_uploader("Subir arquivo JSON", type=["json"])
+    if arq_subido:
+        if st.button("🔄 Restaurar Dados Agora"):
+            if carregar_projeto_json(arq_subido):
+                st.success("Projeto carregado!")
+                st.rerun()
+
+    st.divider()
+    st.header("⚖️ Taxas Globais (BDI)")
+    st.session_state.taxas["imposto"] = st.number_input("Impostos (%)", value=st.session_state.taxas["imposto"])
+    st.session_state.taxas["frete"] = st.number_input("Frete (%)", value=st.session_state.taxas["frete"])
+    st.session_state.taxas["comissao"] = st.number_input("Comissão (%)", value=st.session_state.taxas["comissao"])
+    st.session_state.taxas["lucro"] = st.number_input("Margem Lucro (%)", value=st.session_state.taxas["lucro"])
+
+# --- 4. BUSCA E CÁLCULOS ---
 def buscar_dados_mp(desc):
     if st.session_state.df_mp is None or not desc: return None, None
     termo = str(desc).strip().lower()
@@ -48,7 +111,7 @@ def renderizar_bloco(idx, chave, titulo, tipo_fator):
         df_memoria["Código"] = range(1, len(df_memoria) + 1)
 
     df_ed = st.data_editor(
-        df_memoria, num_rows="dynamic", use_container_width=True, key=f"ed_v16_{chave}_{idx}",
+        df_memoria, num_rows="dynamic", use_container_width=True, key=f"ed_v17_{chave}_{idx}",
         column_config={
             "Código": st.column_config.NumberColumn("Item", disabled=True),
             "Valor Total": st.column_config.NumberColumn("Custo Total", disabled=True, format="R$ %.2f"),
@@ -73,8 +136,8 @@ def renderizar_bloco(idx, chave, titulo, tipo_fator):
         st.rerun(scope="fragment")
     return st.session_state.composicoes[idx][chave]["Valor Final"].sum()
 
-# --- 4. MODAL COM CÁLCULO DE IMPOSTOS ---
-@st.dialog("Composição Técnica e Fechamento", width="large")
+# --- 5. MODAL DE FECHAMENTO ---
+@st.dialog("Composição Técnica", width="large")
 def modal_cpu(idx, linha):
     st.write(f"### 📋 Detalhando: {linha.get('DESCRIÇÃO', 'Item')}")
     if idx not in st.session_state.composicoes:
@@ -85,24 +148,25 @@ def modal_cpu(idx, linha):
     v2 = renderizar_bloco(idx, "servico", "Material Terceirizado C/ Serviço", "mult")
     v3 = renderizar_bloco(idx, "material", "Material", "mult")
     
-    custo_direto_detalhado = v1 + v2 + v3
+    custo_direto = v1 + v2 + v3
     
-    # Aplicação das Taxas Globais (Regra de Negócio da Planilha Modelo)
-    fator_bdi = 1 + ((st.session_state.perc_imposto + st.session_state.perc_frete + st.session_state.perc_comissao + st.session_state.margem_lucro) / 100)
-    venda_com_impostos = custo_direto_detalhado * fator_bdi
+    # Cálculo de BDI baseado nas taxas da lateral
+    tx = st.session_state.taxas
+    bdi_total = tx["imposto"] + tx["frete"] + tx["comissao"] + tx["lucro"]
+    preco_venda_final = custo_direto * (1 + (bdi_total / 100))
 
     st.divider()
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Custo Direto", f"R$ {custo_direto_detalhado:,.2f}")
-    c2.metric("Preço com BDI/Impostos", f"R$ {venda_com_impostos:,.2f}", delta=f"{fator_bdi-1:.1%}")
-    
-    if st.button("💾 Salvar e Atualizar Master", type="primary"):
-        st.session_state.df_obra.at[idx, 'CUSTO UNITÁRIO FINAL'] = venda_com_impostos
+    c1, c2 = st.columns(2)
+    c1.metric("Custo Direto Acumulado", f"R$ {custo_direto:,.2f}")
+    c2.metric("Venda Final (com BDI)", f"R$ {preco_venda_final:,.2f}", delta=f"BDI: {bdi_total}%")
+
+    if st.button("✅ Confirmar e Salvar no Master"):
+        st.session_state.df_obra.at[idx, 'CUSTO UNITÁRIO FINAL'] = preco_venda_final
         st.session_state.df_obra.at[idx, 'STATUS'] = "✅"
         st.rerun(scope="app")
 
-# --- 5. INTERFACE PRINCIPAL ---
-st.title("🏗️ Orçamentador Profissional v16")
+# --- 6. TELA PRINCIPAL ---
+st.title("🏗️ Orçamentador Profissional v17")
 
 c1, c2 = st.columns(2)
 with c1: arq_o = st.file_uploader("1. Planilha da Construtora", type=["xlsx", "xlsm"])
@@ -120,7 +184,7 @@ if arq_o and arq_m:
         df['CUSTO UNITÁRIO FINAL'] = 0.0
         st.session_state.df_obra = df
 
-    st.session_state.df_obra = st.data_editor(st.session_state.df_obra, use_container_width=True, key="master_v16")
-    idx_sel = st.number_input("Índice:", 0, len(st.session_state.df_obra)-1, 0)
-    if st.button(f"🔎 Abrir Detalhamento da Linha {idx_sel}", type="primary"):
+    st.session_state.df_obra = st.data_editor(st.session_state.df_obra, use_container_width=True, key="master_v17")
+    idx_sel = st.number_input("Índice da linha:", 0, len(st.session_state.df_obra)-1, 0)
+    if st.button(f"🔎 Abrir Detalhamento {idx_sel}", type="primary"):
         modal_cpu(idx_sel, st.session_state.df_obra.iloc[idx_sel])
