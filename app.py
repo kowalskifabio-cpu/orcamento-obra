@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="Orçamentador Marcenaria v5", layout="wide")
+st.set_page_config(page_title="Orçamentador Marcenaria v6", layout="wide")
 
 # --- 1. MEMÓRIA DO SISTEMA ---
 if 'df_obra' not in st.session_state: st.session_state.df_obra = None
@@ -14,7 +14,6 @@ def buscar_dados_mp(desc):
     termo = str(desc).strip().lower()
     col_nome = 'NOME PRODUTO' if 'NOME PRODUTO' in base.columns else base.columns[1]
     
-    # Busca exata ou por contém
     match = base[base[col_nome].astype(str).str.lower() == termo]
     if match.empty:
         match = base[base[col_nome].astype(str).str.lower().str.contains(termo, na=False)]
@@ -25,99 +24,92 @@ def buscar_dados_mp(desc):
         return u, c
     return None, None
 
-# --- 2. FRAGMENTO PARA ATUALIZAÇÃO INSTANTÂNEA ---
+# --- 2. COMPONENTE DE BLOCO (FRAGMENTO) ---
 @st.fragment
-def renderizar_blocos_cpu(idx, linha_master):
-    st.write(f"### 📋 Item: {linha_master.get('DESCRIÇÃO', 'Item')}")
+def renderizar_bloco_com_calculos(idx, chave, titulo, tipo_fator):
+    st.subheader(f"📦 {titulo}")
     
-    # Colunas que o sistema gerencia
-    colunas = ["Código", "Descrição", "Quant.", "Unid.", "Valor Unit.", "Valor Total", "Fator", "Valor Final"]
+    # Busca o DF atual da memória
+    df = st.session_state.composicoes[idx][chave]
     
-    if idx not in st.session_state.composicoes:
-        st.session_state.composicoes[idx] = {
-            "terceirizado": pd.DataFrame(columns=colunas),
-            "servico": pd.DataFrame(columns=colunas),
-            "material": pd.DataFrame(columns=colunas)
+    # FORÇA A NUMERAÇÃO AUTOMÁTICA ANTES DE MOSTRAR
+    if len(df) > 0:
+        df = df.reset_index(drop=True)
+        df["Código"] = range(1, len(df) + 1)
+
+    # Exibe o Editor
+    df_ed = st.data_editor(
+        df,
+        num_rows="dynamic",
+        use_container_width=True,
+        key=f"editor_{chave}_{idx}",
+        column_config={
+            "Código": st.column_config.NumberColumn("Item #", disabled=True),
+            "Valor Total": st.column_config.NumberColumn("Subtotal Custo", disabled=True, format="R$ %.2f"),
+            "Valor Final": st.column_config.NumberColumn("Preço Venda", disabled=True, format="R$ %.2f"),
+            "Fator": st.column_config.NumberColumn("Markup %" if tipo_fator == "perc" else "Mult. x")
         }
+    )
 
-    def processar_bloco(titulo, chave, tipo_fator):
-        st.subheader(f"📦 {titulo}")
-        df_atual = st.session_state.composicoes[idx][chave]
-        
-        # Garante que as colunas numéricas existam para evitar erros de cálculo
-        for c in ["Quant.", "Valor Unit.", "Valor Total", "Fator", "Valor Final"]:
-            if c in df_atual.columns:
-                df_atual[c] = pd.to_numeric(df_atual[c], errors='coerce').fillna(0.0)
-
-        df_editado = st.data_editor(
-            df_atual,
-            num_rows="dynamic",
-            use_container_width=True,
-            key=f"editor_{chave}_{idx}",
-            column_config={
-                "Código": st.column_config.NumberColumn("Item #", disabled=True),
-                "Valor Total": st.column_config.NumberColumn("Custo Total", disabled=True, format="R$ %.2f"),
-                "Valor Final": st.column_config.NumberColumn("Preço Venda", disabled=True, format="R$ %.2f"),
-                "Fator": st.column_config.NumberColumn("Markup %" if tipo_fator == "perc" else "Multiplicador x")
-            }
-        )
-
-        # SE HOUVE MUDANÇA (Editou, Adicionou ou Deletou linha)
-        if not df_editado.equals(df_atual):
-            # 1. FORÇA A RE-SEQUENCIAÇÃO DO CÓDIGO (1, 2, 3...)
-            df_editado = df_editado.reset_index(drop=True)
-            df_editado["Código"] = range(1, len(df_editado) + 1)
+    # Se a tabela mudou, processamos e salvamos
+    if not df_ed.equals(df):
+        for i, r in df_ed.iterrows():
+            # Numeração garantida na edição
+            df_ed.at[i, "Código"] = i + 1
             
-            # 2. PROCESSA LINHA POR LINHA
-            for i, r in df_editado.iterrows():
-                # Busca automática se a descrição estiver preenchida e unidade vazia
-                if r['Descrição'] and (not r['Unid.'] or r['Unid.'] == "0" or r['Unid.'] == ""):
-                    u, c = buscar_dados_mp(r['Descrição'])
-                    if u: 
-                        df_editado.at[i, 'Unid.'] = u
-                        df_editado.at[i, 'Valor Unit.'] = c
-                
-                # Cálculos Matemáticos
-                qtd = float(r['Quant.'])
-                vu = float(r['Valor Unit.'])
-                f = float(r['Fator'])
-                
-                # Se for multiplicador e o usuário deixar 0, assume 1 para não zerar o preço
-                if tipo_fator == "mult" and f == 0: f = 1.0
-                
-                custo_total = qtd * vu
-                df_editado.at[i, "Valor Total"] = custo_total
-                
-                if tipo_fator == "perc":
-                    df_editado.at[i, "Valor Final"] = custo_total * (1 + (f / 100))
-                else:
-                    df_editado.at[i, "Valor Final"] = custo_total * f
+            # Busca automática
+            if r['Descrição'] and (not r['Unid.'] or r['Unid.'] == "0"):
+                u, c = buscar_dados_mp(r['Descrição'])
+                if u:
+                    df_ed.at[i, 'Unid.'] = u
+                    df_ed.at[i, 'Valor Unit.'] = c
             
-            # Salva na memória e recarrega APENAS o fragmento (mantém a caixa aberta)
-            st.session_state.composicoes[idx][chave] = df_editado
-            st.rerun(scope="fragment")
+            # Cálculos
+            q = float(pd.to_numeric(r['Quant.'], errors='coerce') or 0.0)
+            vu = float(pd.to_numeric(r['Valor Unit.'], errors='coerce') or 0.0)
+            f = float(pd.to_numeric(r['Fator'], errors='coerce') or (0.0 if tipo_fator == "perc" else 1.0))
+            
+            custo = q * vu
+            df_ed.at[i, "Valor Total"] = custo
+            
+            if tipo_fator == "perc":
+                df_ed.at[i, "Valor Final"] = custo * (1 + (f / 100))
+            else:
+                df_ed.at[i, "Valor Final"] = custo * f
         
-        return df_editado["Valor Final"].sum()
+        st.session_state.composicoes[idx][chave] = df_ed
+        st.rerun(scope="fragment") # Agora o rerun está protegido pelo fragmento isolado
 
-    v1 = processar_bloco("Material Terceirizado", "terceirizado", "perc")
-    v2 = processar_bloco("Material Terceirizado C/ Serviço", "servico", "mult")
-    v3 = processar_bloco("Material", "material", "mult")
+    return df_ed["Valor Final"].sum()
 
-    total_venda = v1 + v2 + v3
-    st.divider()
-    st.metric("VALOR TOTAL DO ITEM (VENDA)", f"R$ {total_venda:,.2f}")
-
-    if st.button("💾 Finalizar e Salvar Tudo", type="primary"):
-        st.session_state.df_obra.at[idx, 'CUSTO UNITÁRIO FINAL'] = total_venda
-        st.session_state.df_obra.at[idx, 'STATUS'] = "✅"
-        st.rerun(scope="app") # Atualiza a planilha master lá fora
-
-# --- 3. DIÁLOGO (POP-UP) ---
+# --- 3. DIÁLOGO PRINCIPAL ---
 @st.dialog("Composição Técnica", width="large")
 def modal_cpu(idx, linha_master):
-    renderizar_blocos_cpu(idx, linha_master)
+    st.write(f"### 📋 Item: {linha_master.get('DESCRIÇÃO', 'Item')}")
+    
+    if idx not in st.session_state.composicoes:
+        cols = ["Código", "Descrição", "Quant.", "Unid.", "Valor Unit.", "Valor Total", "Fator", "Valor Final"]
+        st.session_state.composicoes[idx] = {
+            "terceirizado": pd.DataFrame(columns=cols),
+            "servico": pd.DataFrame(columns=cols),
+            "material": pd.DataFrame(columns=cols)
+        }
 
-# --- 4. INTERFACE PRINCIPAL ---
+    # Renderiza cada bloco de forma independente
+    v1 = renderizar_bloco_com_calculos(idx, "terceirizado", "Material Terceirizado", "perc")
+    v2 = renderizar_bloco_com_calculos(idx, "servico", "Material Terceirizado C/ Serviço", "mult")
+    v3 = renderizar_bloco_com_calculos(idx, "material", "Material", "mult")
+
+    st.divider()
+    total = v1 + v2 + v3
+    st.metric("TOTAL DE VENDA", f"R$ {total:,.2f}")
+
+    if st.button("💾 Finalizar e Salvar na Planilha", type="primary"):
+        st.session_state.df_obra.at[idx, 'CUSTO UNITÁRIO FINAL'] = total
+        st.session_state.df_obra.at[idx, 'STATUS'] = "✅"
+        st.rerun(scope="app")
+
+# --- 4. TELA PRINCIPAL ---
 st.title("🏗️ Orçamentador Profissional")
 
 c1, c2 = st.columns(2)
@@ -139,7 +131,6 @@ if arq_obra and arq_mp:
 
     st.session_state.df_obra = st.data_editor(st.session_state.df_obra, use_container_width=True, key="master_editor")
     
-    st.divider()
-    idx_sel = st.number_input("Digite o índice da linha para detalhar:", 0, len(st.session_state.df_obra)-1, 0)
+    idx_sel = st.number_input("Índice da linha:", 0, len(st.session_state.df_obra)-1, 0)
     if st.button(f"🔎 Abrir Detalhamento {idx_sel}", type="primary"):
         modal_cpu(idx_sel, st.session_state.df_obra.iloc[idx_sel])
